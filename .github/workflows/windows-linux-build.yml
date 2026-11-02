@@ -1,12 +1,7 @@
-name: Build Windows and Linux packages
+name: Build Windows package
 
 on:
   workflow_dispatch:
-    inputs:
-      build_all:
-        description: Build both Windows and Linux packages
-        type: boolean
-        default: true
 
 permissions:
   contents: read
@@ -16,17 +11,14 @@ env:
 
 jobs:
   build:
-    if: ${{ inputs.build_all }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: windows-latest
             target: windows
-          - os: ubuntu-latest
-            target: linux
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 350
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
 
@@ -78,6 +70,14 @@ jobs:
         shell: pwsh
         run: Move-Item -LiteralPath upstream -Destination D:\f
 
+      - name: Cache Mozilla build toolchain
+        if: matrix.target == 'windows'
+        uses: actions/cache@v4
+        with:
+          path: C:\Users\runneradmin\.mozbuild
+          key: mozbuild-windows-${{ env.FIREFOX_REV }}
+          restore-keys: mozbuild-windows-
+
       - name: Bootstrap, build, and package
         shell: bash
         working-directory: ${{ matrix.target == 'windows' && 'D:\f' || 'upstream' }}
@@ -94,14 +94,5 @@ jobs:
         with:
           name: firefox-reverse-windows-x86_64
           path: D:/f/obj-*/dist/install/**/firefox-*.zip
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Upload Linux package
-        if: matrix.target == 'linux'
-        uses: actions/upload-artifact@v4
-        with:
-          name: firefox-reverse-linux-x86_64
-          path: upstream/obj-*/dist/firefox-*.tar.*
           if-no-files-found: error
           retention-days: 14
