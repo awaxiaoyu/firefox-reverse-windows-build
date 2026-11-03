@@ -36,6 +36,15 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Build agent-sidebar bundle
+        shell: bash
+        working-directory: additions/browser/components/agent-sidebar
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+          test -s content/agent-sidebar.bundle.js
+
       - name: Install MozillaBuild
         if: matrix.target == 'windows'
         shell: pwsh
