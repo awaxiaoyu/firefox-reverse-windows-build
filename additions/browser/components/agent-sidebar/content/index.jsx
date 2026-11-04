@@ -14,6 +14,9 @@ function loadModules() {
   if (typeof ChromeUtils === "undefined") {
     throw new Error("ChromeUtils 不可用：agent-sidebar 须在 firefox-reverse 浏览器内运行");
   }
+  const Services = globalThis.Services || ChromeUtils.importESModule(
+    "resource://gre/modules/Services.sys.mjs"
+  ).Services;
   const { configStore } = ChromeUtils.importESModule(
     "resource:///modules/agentsidebar/ConfigStore.sys.mjs"
   );
@@ -54,6 +57,14 @@ function loadModules() {
     session: agentSession,
     isVisionModel,
     fetchModels,
+    providerAuth: {
+      importCliProxyFiles,
+      loginProvider(provider) {
+        const browser = Services.wm.getMostRecentWindow("navigator:browser");
+        if (!browser?.openTrustedLinkIn) throw new Error("找不到可打开登录页的 Firefox 窗口");
+        return loginProvider(provider, url => browser.openTrustedLinkIn(url, "tab"));
+      },
+    },
     workspace: backends.workspace, // 工作目录后端（侧边栏据此 setRoot/列文件）
     notes: backends.notes, // 逆向进展笔记后端（每轮把当前站点笔记摘要注入系统提示）
     skill: backends.skill, // 通用 SkillRegistry（内置 + 用户目录 + 工作区目录，正文按需读取）
@@ -97,6 +108,7 @@ function App({ mods }) {
           providers={mods.providers}
           protocolOptions={mods.protocolOptions}
           fetchModels={mods.fetchModels}
+          providerAuth={mods.providerAuth}
           onClose={() => setView("chat")}
         />
       )}

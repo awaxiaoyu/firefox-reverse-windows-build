@@ -145,9 +145,12 @@ export class LlmClient {
           ? "/v1beta/models"
           : "/v1/chat/completions");
     this.apiKey = cfg.apiKey || "";
+    this.oauth = cfg.oauth || null;
+    this.oauthCredential = cfg.oauthCredential || null;
+    this.projectId = cfg.projectId || "";
     this.model = cfg.model || "";
     this.providerId = cfg.providerId || "custom";
-    this.sessionId = cfg.sessionId || "";
+    this.sessionId = cfg.sessionId || (this.providerId === "openai-codex" ? crypto.randomUUID() : "");
     this.promptCacheMode = cfg.promptCacheMode === "off" ? "off" : "auto";
     this.promptCacheTtl =
       cfg.promptCacheTtl === "5m" || cfg.promptCacheTtl === "1h"
@@ -336,6 +339,16 @@ export class LlmClient {
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${this.apiKey}`,
+            ...(this.providerId === "openai-codex"
+              ? {
+                  "OpenAI-Beta": "responses=experimental",
+                  originator: "firefox-reverse",
+                  session_id: opts.sessionId ?? this.sessionId,
+                  ...(this.oauthCredential?.accountId
+                    ? { "chatgpt-account-id": this.oauthCredential.accountId }
+                    : {}),
+                }
+              : {}),
             ...openCodeRequestHeaders(this.endpoint, {
               sessionId: opts.sessionId ?? this.sessionId,
               requireSession: true,
@@ -347,7 +360,8 @@ export class LlmClient {
     }
 
     if (this.protocol === PROTOCOLS.GEMINI) {
-      const streaming = opts.stream ?? this.request.stream ?? false;
+      const cloudCode = this.providerId === "google-gemini-cli" || this.providerId === "google-antigravity";
+      const streaming = cloudCode || (opts.stream ?? this.request.stream ?? false);
       const modelId = model.replace(/^models\//, "");
       const method = streaming ? "streamGenerateContent" : "generateContent";
       const path = this.chatPath.includes("{model}")
@@ -379,6 +393,36 @@ export class LlmClient {
       if (systemInstruction) body.systemInstruction = systemInstruction;
       if (opts.tools?.length) {
         body.tools = [{ functionDeclarations: opts.tools.map(geminiFunctionDeclaration) }];
+      }
+      if (cloudCode) {
+        const request = { ...body };
+        let wireBody = { project: this.projectId || this.oauthCredential?.projectId || "", model: modelId, request };
+        const isAntigravity = this.providerId === "google-antigravity";
+        if (isAntigravity) {
+          request.sessionId ||= this.sessionId || crypto.randomUUID();
+          wireBody = { ...wireBody, requestId: crypto.randomUUID(), userAgent: "antigravity" };
+        }
+        return {
+          url: `${this.baseUrl}/v1internal:streamGenerateContent?alt=sse`,
+          cacheApplied: false,
+          streamUsageApplied: false,
+          features,
+          init: {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${this.apiKey}`,
+              ...(isAntigravity
+                ? { "User-Agent": "antigravity/hub/2.26.0 (aidev_client; os_type=windows; arch=amd64; cl=1005016104)" }
+                : {
+                    Accept: "text/event-stream",
+                    "User-Agent": `GeminiCLI/0.46.0/${modelId} (windows; x64; terminal)`,
+                    "Client-Metadata": "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI",
+                  }),
+            },
+            body: JSON.stringify(wireBody),
+          },
+        };
       }
       return {
         url: this.baseUrl + path + (streaming ? "?alt=sse" : ""),
@@ -435,8 +479,15 @@ export class LlmClient {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-api-key": this.apiKey,
-            Authorization: `Bearer ${this.apiKey}`,
+            ...(this.oauthCredential
+              ? {
+                  Authorization: `Bearer ${this.apiKey}`,
+                  "anthropic-beta": "oauth-2025-04-20",
+                }
+              : {
+                  "x-api-key": this.apiKey,
+                  Authorization: `Bearer ${this.apiKey}`,
+                }),
             "anthropic-version": "2023-06-01",
             "anthropic-dangerous-direct-browser-access": "true",
             ...openCodeRequestHeaders(this.baseUrl + path, {
@@ -526,16 +577,19 @@ export class LlmClient {
    * @returns {Promise<ChatResult>}
    */
   async chat(messages, opts = {}) {
-    if (!this.apiKey) {
+    if (!this.apiKey && !this.oauth) {
       throw new LlmError(
         "chat: apiKey is empty — 在 SettingsPane 填写或在 agent.json 配置"
       );
     }
+    if (this.oauth) await this._loadOAuthCredential();
     const streaming = typeof opts.onDelta === "function";
-    const requestOpts = { ...opts, stream: streaming };
+    const cloudCode = this.providerId === "google-gemini-cli" || this.providerId === "google-antigravity";
+    const requestOpts = { ...opts, stream: streaming || cloudCode };
     let built = this.buildRequest(messages, requestOpts);
     let optionalFieldFallbackUsed = false;
     let droppedFeatures = null;
+    let oauthRefreshRetried = false;
 
     // 瞬时错误（网关 5xx / 上游抖动 / 网络）自动重试，避免中转站后端偶发失败直接断掉整轮。
     const maxAttempts = 3;
@@ -595,6 +649,13 @@ export class LlmClient {
       if (!resp.ok) {
         stopWatch();
         const errText = await resp.text().catch(() => "");
+        if (resp.status === 401 && this.oauth && !oauthRefreshRetried) {
+          oauthRefreshRetried = true;
+          await this._loadOAuthCredential(true);
+          built = this.buildRequest(messages, requestOpts);
+          attempt--;
+          continue;
+        }
         const optional = built.features || [];
         if (optional.length && !optionalFieldFallbackUsed && [400, 404, 422].includes(resp.status)) {
           // Gateways and models reject optional fields they do not know: prompt_cache_key,
@@ -634,7 +695,7 @@ export class LlmClient {
         });
       }
 
-      if (streaming) {
+      if (streaming || cloudCode) {
         // 流式读取期间，每段数据都 bump() 重置看门狗（见 _readStream 的 onActivity）。
         try {
           if (this.protocol === PROTOCOLS.ANTHROPIC) {
@@ -673,6 +734,14 @@ export class LlmClient {
       return this.parseResponse(json);
     }
     throw lastErr;
+  }
+
+  async _loadOAuthCredential(forceRefresh = false) {
+    const credential = await this.oauth.getCredential({ forceRefresh });
+    if (!credential?.access) throw new LlmError("OAuth 登录没有返回 access token");
+    this.oauthCredential = credential;
+    this.apiKey = credential.access;
+    this.projectId = credential.projectId || this.projectId;
   }
 
   /** 重试退避用的小延时（用 Timer 解析器，system ESM 也能用）。 */

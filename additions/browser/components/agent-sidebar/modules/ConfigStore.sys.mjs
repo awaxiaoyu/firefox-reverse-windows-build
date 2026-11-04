@@ -1,12 +1,11 @@
-/* ConfigStore.sys.mjs — Agent 侧边栏配置持久化（active provider / API Key / 模型）。
+/* ConfigStore.sys.mjs — Agent 侧边栏配置持久化（模型 profile 与账号凭据引用）。
  *
  * 设计：
  * - Firefox 内用 Services.prefs；无 Services 时（Node 自测）退化为内存 backend，
  *   因此本模块也能在 Node 下 import 验证（不静态依赖 Services）。
- * - 与 LlmClient 解耦：LlmClient 不读配置，只接收 apiKey 入参；本类只管存取。
+ * - 与 LlmClient 解耦：LlmClient 不读配置，只接收 apiKey 或 OAuth 凭据回调；本类只管存取。
  *
- * 安全提示：A1 用 prefs 明文存 API Key（已在 patches/agent-ui/README.md 标风险）。
- * LoginManager 加密存储留后续增强。
+ * API Key 仍存 prefs；OAuth refresh/access token 只存 Firefox LoginManager。
  */
 
 import { CUSTOM_PROTOCOLS as KNOWN_PROTOCOLS } from "./LlmClient.sys.mjs";
@@ -20,6 +19,9 @@ const MAX_MODEL_PROFILES = 50;
 const LEGACY_PROVIDER_IDS = ["deepseek", "zhipu", "kimi", "minimax", "qwen", "custom"];
 // 协议清单只在 LlmClient 维护一份；这里认不出的值回落到 openai。
 const CUSTOM_PROTOCOLS = new Set(KNOWN_PROTOCOLS);
+const OAUTH_PROVIDER_IDS = new Set(["openai-codex", "anthropic", "google-gemini-cli", "google-antigravity"]);
+const LOGIN_ORIGIN = "chrome://firefox-reverse-agent";
+const LOGIN_REALM = "agent-sidebar-oauth";
 
 function normalizeCustomProtocol(value) {
   const protocol = String(value || "").trim();
@@ -49,6 +51,7 @@ function normalizeProfile(raw = {}) {
     id: String(raw.id || profileId()).slice(0, 100),
     name: cleanProfileName(raw.name, PROVIDER_NAMES[provider] || "模型配置"),
     provider,
+    authType: raw.authType === "oauth" || OAUTH_PROVIDER_IDS.has(provider) ? "oauth" : "api-key",
     apiKey: String(raw.apiKey || ""),
     model: String(raw.model || "").trim(),
     baseUrl: String(raw.baseUrl || "").trim(),
@@ -97,8 +100,9 @@ function makeBackend() {
 }
 
 export class ConfigStore {
-  constructor(backend = makeBackend()) {
+  constructor(backend = makeBackend(), loginManager = globalThis.Services?.logins) {
     this.b = backend;
+    this.loginManager = loginManager;
   }
 
   /** 真持久化（Firefox prefs）还是内存（Node 自测）。 */
@@ -187,6 +191,60 @@ export class ConfigStore {
     }
   }
 
+  _findOAuthLogin(profileId) {
+    if (!this.loginManager) return null;
+    return this.loginManager
+      .findLogins({}, LOGIN_ORIGIN, null, LOGIN_REALM)
+      .find(login => login.username === profileId) || null;
+  }
+
+  getOAuthCredential(profileId) {
+    const login = this._findOAuthLogin(profileId);
+    if (!login) return null;
+    try {
+      const credential = JSON.parse(login.password);
+      return credential && typeof credential === "object" ? credential : null;
+    } catch {
+      return null;
+    }
+  }
+
+  setOAuthCredential(profileId, credential) {
+    if (!this.loginManager) {
+      throw new Error("Firefox LoginManager 不可用，无法安全保存 OAuth 凭据");
+    }
+    const value = JSON.stringify(credential);
+    const existing = this._findOAuthLogin(profileId);
+    const classes = globalThis.Cc || globalThis.Components?.classes;
+    const interfaces = globalThis.Ci || globalThis.Components?.interfaces;
+    const login = classes?.["@mozilla.org/login-manager/loginInfo;1"]
+      ?.createInstance(interfaces?.nsILoginInfo) || {};
+    if (login?.init) {
+      login.init(LOGIN_ORIGIN, null, LOGIN_REALM, profileId, value, "", "");
+    } else {
+      Object.assign(login, {
+        hostname: LOGIN_ORIGIN,
+        formSubmitURL: null,
+        httpRealm: LOGIN_REALM,
+        username: profileId,
+        password: value,
+        usernameField: "",
+        passwordField: "",
+      });
+    }
+    if (existing && this.loginManager.modifyLogin) {
+      this.loginManager.modifyLogin(existing, login);
+    } else {
+      this.loginManager.addLogin(login);
+      if (existing) this.loginManager.removeLogin(existing);
+    }
+  }
+
+  clearOAuthCredential(profileId) {
+    const login = this._findOAuthLogin(profileId);
+    if (login) this.loginManager.removeLogin(login);
+  }
+
   /** 可命名的模型/账号配置。同一 provider 可保存多组 Key、URL 和模型。 */
   listModelProfiles() {
     return this._ensureProfiles().profiles.map(p => ({ ...p }));
@@ -242,7 +300,19 @@ export class ConfigStore {
       throw new Error("模型配置不存在: " + id);
     }
     const { id: _id, createdAt: _createdAt, updatedAt: _updatedAt, ...copy } = source;
-    return this.createModelProfile({ ...copy, name: source.name + " 副本" });
+    const duplicate = this.createModelProfile({ ...copy, name: source.name + " 副本" });
+    if (source.authType === "oauth") {
+      const credential = this.getOAuthCredential(source.id);
+      if (credential) {
+        try {
+          this.setOAuthCredential(duplicate.id, credential);
+        } catch (error) {
+          this.deleteModelProfile(duplicate.id);
+          throw error;
+        }
+      }
+    }
+    return duplicate;
   }
 
   updateModelProfile(id, patch = {}) {
@@ -261,6 +331,9 @@ export class ConfigStore {
       updatedAt: Date.now(),
     });
     profiles[index] = next;
+    if (current.authType === "oauth" && next.authType !== "oauth") {
+      this.clearOAuthCredential(id);
+    }
     this._writeProfiles(profiles);
     if (activeId === id) {
       this._syncLegacy(next);
@@ -277,6 +350,7 @@ export class ConfigStore {
     if (next.length === profiles.length) {
       return false;
     }
+    this.clearOAuthCredential(id);
     this._writeProfiles(next);
     if (activeId === id) {
       this.b.setString(ACTIVE_MODEL_PROFILE_KEY, next[0].id);

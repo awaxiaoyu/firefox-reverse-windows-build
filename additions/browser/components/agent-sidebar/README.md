@@ -52,5 +52,5 @@ DEEPSEEK_API_KEY=sk-xxx \
 ## 设计原则
 
 - **LlmClient 零 Firefox 依赖**：只用 `globalThis.fetch` / `AbortController`，不 import Services/ChromeUtils，因此能在 Node 下独立验证。
-- **Key 不在 LlmClient 持久化**：由 ConfigStore 负责存取，LlmClient 只接收 `apiKey` 入参。
+- **凭据不在 LlmClient 持久化**：ConfigStore 在 prefs 保存 API Key、通过 Firefox LoginManager 保存 OAuth token；LlmClient 只接收 API Key 或 OAuth 凭据回调。
 - **A1 只做 non-streaming + openai 协议**；SSE 流式与 anthropic/gemini 协议留 A2。

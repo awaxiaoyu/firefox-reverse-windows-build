@@ -5,6 +5,8 @@
  * buildClientFromStore() 在发送时构造 LlmClient。
  */
 import { LlmClient, PROTOCOLS, openCodeRequestHeaders, protocolSupportsReasoningEffort } from "./LlmClient.sys.mjs";
+import { normalizeReasoningEffort } from "./ReasoningEffort.sys.mjs";
+import { getFreshOAuthCredential } from "./ProviderAuth.sys.mjs";
 
 /** 设置页“协议”下拉的选项；reasoningEffort 标明该协议是否显示 OpenAI 形态的思考等级。 */
 export const CUSTOM_PROTOCOL_OPTIONS = Object.freeze(
@@ -15,9 +17,8 @@ export const CUSTOM_PROTOCOL_OPTIONS = Object.freeze(
     [PROTOCOLS.GEMINI, "Google Gemini 原生（GenerateContent）"],
   ].map(([value, label]) => Object.freeze({ value, label, reasoningEffort: protocolSupportsReasoningEffort(value) }))
 );
-import { normalizeReasoningEffort } from "./ReasoningEffort.sys.mjs";
 
-/** 内置 Claude 模型（Anthropic 协议自定义端点用；中转站 /v1/models 往往列不出 Claude）。
+/** 内置 Claude 模型（中转站 /v1/models 往往列不出 Claude）。
  *  首项为默认。如需别的版本，设置里仍可「手动输入」。 */
 export const ANTHROPIC_MODELS = [
   "claude-opus-4-7",
@@ -87,6 +88,42 @@ export const BUILTIN_PROVIDERS = Object.freeze({
     chatPath: "/chat/completions",
     defaultModel: "qwen3-max",
     models: ["qwen3-max", "qwen-max-latest", "qwen-plus", "qwen-turbo", "qwen3.5-flash"],
+  },
+  "openai-codex": {
+    label: "OpenAI Codex（ChatGPT 订阅）",
+    protocol: "openai-responses",
+    baseUrl: "https://chatgpt.com/backend-api/codex",
+    chatPath: "/responses",
+    defaultModel: "gpt-6.1-sol",
+    models: ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"],
+    oauth: true,
+  },
+  anthropic: {
+    label: "Anthropic Claude（Pro/Max）",
+    protocol: "anthropic",
+    baseUrl: "https://api.anthropic.com",
+    chatPath: "/v1/messages",
+    defaultModel: ANTHROPIC_MODELS[0],
+    models: ANTHROPIC_MODELS,
+    oauth: true,
+  },
+  "google-gemini-cli": {
+    label: "Google Gemini CLI",
+    protocol: "gemini",
+    baseUrl: "https://cloudcode-pa.googleapis.com",
+    chatPath: "/v1internal:streamGenerateContent",
+    defaultModel: "gemini-3.1-pro-preview",
+    models: ["gemini-3.1-pro-preview", "gemini-3.1-flash-preview", "gemini-2.5-pro", "gemini-2.5-flash"],
+    oauth: true,
+  },
+  "google-antigravity": {
+    label: "Google Antigravity",
+    protocol: "gemini",
+    baseUrl: "https://daily-cloudcode-pa.googleapis.com",
+    chatPath: "/v1internal:streamGenerateContent",
+    defaultModel: "gemini-3.1-pro",
+    models: ["gemini-3.1-pro", "gemini-3.1-flash", "claude-sonnet-4-6", "claude-opus-4-6-thinking"],
+    oauth: true,
   },
   // 自定义端点：URL/token/协议/模型全部在设置里填；支持 OpenAI Chat/Responses、Anthropic Messages 与 Gemini GenerateContent。
   // 视觉模型(gpt-4o 等)也通过自定义端点配置（OpenAI 协议 + 视觉模型名）。
@@ -263,6 +300,7 @@ export function listProviders() {
     models: p.models,
     defaultModel: p.defaultModel,
     anthropicModels: p.anthropicModels || [],
+    oauth: p.oauth === true,
   }));
 }
 
@@ -284,6 +322,7 @@ export function buildClientFromStore(store, overrides = {}) {
   let protocol = p.protocol;
   let baseUrl = overrides.baseUrl || p.baseUrl;
   let chatPath = p.chatPath;
+  const isOAuthProfile = p.oauth === true && profile?.authType === "oauth";
   let reasoningEffort = "auto";
   if (id === "custom") {
     protocol =
@@ -314,6 +353,10 @@ export function buildClientFromStore(store, overrides = {}) {
     baseUrl,
     chatPath,
     apiKey: overrides.apiKey || (profile && profile.apiKey) || store.getApiKey(id),
+    oauth: isOAuthProfile
+      ? { getCredential: options => getFreshOAuthCredential(store, profile.id, options) }
+      : null,
+    projectId: isOAuthProfile ? store.getOAuthCredential(profile.id)?.projectId || "" : "",
     model: overrides.model || (profile && profile.model) || store.getModel(id) || p.defaultModel,
     promptCacheMode:
       overrides.promptCacheMode ||

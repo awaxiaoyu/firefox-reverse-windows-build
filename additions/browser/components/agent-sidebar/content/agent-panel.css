@@ -1699,6 +1699,8 @@ body {
   background: var(--in-content-button-background-hover, rgba(128,128,128,0.18));
 }
 .settings-pane__profilebar button:disabled { opacity: 0.45; cursor: default; }
+.settings-pane__auth-actions { display: flex; flex-wrap: wrap; }
+.settings-pane__auth-actions button { flex: 1 1 120px; }
 
 .settings-pane__field {
   display: flex;

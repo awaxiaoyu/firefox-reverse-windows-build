@@ -38,6 +38,7 @@ EXTRA_JS_MODULES.agentsidebar += [
     "modules/PageDeterminism.sys.mjs",
     "modules/PageInteractionBackend.sys.mjs",
     "modules/PageInteractionCore.sys.mjs",
+    "modules/ProviderAuth.sys.mjs",
     "modules/providers.sys.mjs",
     "modules/ReasoningEffort.sys.mjs",
     "modules/ScriptsBackend.sys.mjs",

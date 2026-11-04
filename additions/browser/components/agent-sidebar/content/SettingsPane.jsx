@@ -17,7 +17,7 @@ function legacyProfile(store, providers) {
 }
 
 /** 模型配置管理：同一 provider 可保存多组账号/端点，选择历史配置即可切换。 */
-export default function SettingsPane({ store, providers, protocolOptions = [], fetchModels, onClose }) {
+export default function SettingsPane({ store, providers, protocolOptions = [], fetchModels, providerAuth, onClose }) {
   const initialProfiles = store.listModelProfiles
     ? store.listModelProfiles()
     : [legacyProfile(store, providers)];
@@ -46,8 +46,12 @@ export default function SettingsPane({ store, providers, protocolOptions = [], f
   const [manual, setManual] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+  const importFilesRef = useRef(null);
+  const importDirectoryRef = useRef(null);
 
   const current = providers.find(p => p.id === provider) || providers[0];
+  const isOAuth = current?.oauth === true;
   function updateFontScale(value) {
     const next = normalizeFontScale(value);
     store.setSidebarFontScale?.(next);
@@ -102,6 +106,7 @@ export default function SettingsPane({ store, providers, protocolOptions = [], f
       const p = store.createModelProfile({
         name: `${current?.label || "模型"} 新配置`,
         provider,
+        authType: isOAuth ? "oauth" : "api-key",
         apiKey: "",
         model: model || current?.defaultModel || "",
         baseUrl: isCustom ? customUrl : "",
@@ -157,6 +162,7 @@ export default function SettingsPane({ store, providers, protocolOptions = [], f
       const values = {
         name: profileName,
         provider,
+        authType: isOAuth ? "oauth" : "api-key",
         apiKey,
         model,
         baseUrl: isCustom ? customUrl : "",
@@ -216,6 +222,66 @@ export default function SettingsPane({ store, providers, protocolOptions = [], f
     }
   }
 
+  async function doProviderLogin() {
+    if (!providerAuth?.loginProvider || authBusy) return;
+    setAuthBusy(true);
+    setError("");
+    setStatus("正在等待账号授权…");
+    try {
+      const credential = await providerAuth.loginProvider(provider);
+      const name = credential.email ? `${current.label} · ${credential.email}` : `${current.label} 账号`;
+      store.setOAuthCredential(profileId, credential);
+      const saved = store.updateModelProfile(profileId, {
+        name,
+        provider,
+        authType: "oauth",
+        apiKey: "",
+        model: model || current.defaultModel || "",
+        baseUrl: "",
+      });
+      store.setActiveModelProfileId(saved.id);
+      refreshProfiles(saved.id);
+      loadProfile(saved, "登录成功并设为当前配置");
+    } catch (e) {
+      setStatus("");
+      setError((e && e.message) || String(e));
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function doImportFiles(event) {
+    const input = event.currentTarget;
+    const selected = Array.from(input.files || []);
+    input.value = "";
+    if (!selected.length || !providerAuth?.importCliProxyFiles || authBusy) return;
+    setAuthBusy(true);
+    setError("");
+    setStatus("正在导入账号凭据…");
+    try {
+      const report = await providerAuth.importCliProxyFiles(selected, store);
+      const last = report.imported[report.imported.length - 1];
+      if (last) {
+        refreshProfiles(last.profile.id);
+        loadProfile(last.profile, `已导入 ${report.imported.length} 个账号配置`);
+      } else {
+        setStatus("");
+      }
+      if (report.skipped.length) {
+        const details = report.skipped.map(item => `${item.file}：${item.reason}`).join("；");
+        setError(`跳过 ${report.skipped.length} 个文件：${details}`);
+      }
+      if (!report.imported.length && !report.skipped.length) {
+        setError("所选文件中没有可导入的 JSON 凭据");
+      }
+    } catch (e) {
+      setStatus("");
+      setError((e && e.message) || String(e));
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
   const fetchedClaude = fetchedModels.filter(x => /claude/i.test(x));
   const customModels = customProtocol === "anthropic"
     ? (fetchedClaude.length ? fetchedClaude : current.anthropicModels || [])
@@ -265,6 +331,37 @@ export default function SettingsPane({ store, providers, protocolOptions = [], f
         </select>
       </label>
 
+      {isOAuth && (
+        <section className="settings-pane__section">
+          <div className="settings-pane__profilebar settings-pane__auth-actions">
+            <button type="button" onClick={doProviderLogin} disabled={authBusy}>
+              {authBusy ? "处理中…" : `登录 ${current.label}`}
+            </button>
+            <button type="button" onClick={() => importFilesRef.current?.click()} disabled={authBusy}>导入账号文件</button>
+            <button type="button" onClick={() => importDirectoryRef.current?.click()} disabled={authBusy}>导入账号目录</button>
+          </div>
+          <input
+            ref={importFilesRef}
+            type="file"
+            accept=".json,application/json"
+            multiple
+            hidden
+            onChange={doImportFiles}
+          />
+          <input
+            ref={importDirectoryRef}
+            type="file"
+            accept=".json,application/json"
+            multiple
+            webkitdirectory=""
+            directory=""
+            hidden
+            onChange={doImportFiles}
+          />
+          {status && authBusy && <span className="settings-pane__hint">{status}</span>}
+        </section>
+      )}
+
       {isCustom && (
         <>
           <label className="settings-pane__field">
@@ -280,10 +377,12 @@ export default function SettingsPane({ store, providers, protocolOptions = [], f
         </>
       )}
 
-      <label className="settings-pane__field">
-        {isCustom ? "API Key / Token" : "API Key"}
-        <input type="password" value={apiKey} placeholder="sk-..." onChange={e => { setApiKey(e.target.value); setStatus(""); }} />
-      </label>
+      {!isOAuth && (
+        <label className="settings-pane__field">
+          {isCustom ? "API Key / Token" : "API Key"}
+          <input type="password" value={apiKey} placeholder="sk-..." onChange={e => { setApiKey(e.target.value); setStatus(""); }} />
+        </label>
+      )}
 
       {isCustom && protocolOptions.some(p => p.value === customProtocol && p.reasoningEffort) && (
         <label className="settings-pane__field">
@@ -381,7 +480,7 @@ export default function SettingsPane({ store, providers, protocolOptions = [], f
       </div>
 
       <p className="settings-pane__note">
-        每条配置独立保存渠道、账号、模型和思考等级。Key 与旧版本一致，仅明文保存在本机浏览器 prefs，不会随会话导出。
+        每条配置独立保存渠道、账号、模型和思考等级。OAuth 凭据由 Firefox LoginManager 保存；API Key 仍保存在本机浏览器 prefs。
       </p>
     </div>
   );
