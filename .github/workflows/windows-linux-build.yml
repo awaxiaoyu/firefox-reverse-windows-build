@@ -102,6 +102,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: firefox-reverse-windows-x86_64
-          path: D:/f/obj-*/dist/install/**/firefox-*.zip
+          path: D:/f/obj-*/dist/firefox-*.win64.zip
           if-no-files-found: error
           retention-days: 14
