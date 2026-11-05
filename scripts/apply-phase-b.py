@@ -82,8 +82,8 @@ NEW_INTERPRET_FN = OLD_INTERPRET_FN + '  mozilla::jsvmp::EnsureInit();\n'
 patch_file(ipath, [
     (
         "add include for JsvmpTraceCore.h",
-        '#include "jit/JitZone.h"\n',
-        '#include "jit/JitZone.h"\n#include "vm/JsvmpTraceCore.h"\n',
+        '#include "vm/JSScript.h"\n',
+        '#include "vm/JSScript.h"\n#include "vm/JsvmpTraceCore.h"\n',
     ),
     (
         "add EnsureInit() at top of js::Interpret()",
