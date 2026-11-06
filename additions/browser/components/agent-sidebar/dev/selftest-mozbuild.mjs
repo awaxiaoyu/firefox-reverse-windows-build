@@ -14,6 +14,8 @@ const applyPatchesPath = fileURLToPath(new URL("../../../../../scripts/apply-pat
 const bootstrapPath = fileURLToPath(new URL("../../../../../scripts/bootstrap.sh", import.meta.url));
 const buildRelinkPath = fileURLToPath(new URL("../../../../../scripts/force-build-id-relink.sh", import.meta.url));
 const source = fs.readFileSync(mozBuildPath, "utf8");
+const indexPath = fileURLToPath(new URL("../content/index.jsx", import.meta.url));
+const indexSource = fs.readFileSync(indexPath, "utf8");
 const localeMozBuild = fs.readFileSync(localeMozBuildPath, "utf8");
 const packageVersion = JSON.parse(fs.readFileSync(packagePath, "utf8")).version;
 const block = source.match(/EXTRA_JS_MODULES\.agentsidebar\s*\+=\s*\[([\s\S]*?)\n\]/);
@@ -38,6 +40,12 @@ if (JSON.stringify(entries) !== JSON.stringify(sorted)) {
 
 if (!source.includes('DIRS += ["preferences"]')) {
   console.error("FAIL: preferences subdirectory is not registered in moz.build");
+  process.exit(1);
+}
+
+if (!/const\s+\{\s*importCliProxyFiles,\s*loginProvider\s*\}\s*=\s*ChromeUtils\.importESModule\(\s*"resource:\/\/\/modules\/agentsidebar\/ProviderAuth\.sys\.mjs"\s*\)/.test(indexSource)
+    || !/providerAuth:\s*\{\s*importCliProxyFiles,\s*loginProvider\(provider\)/.test(indexSource)) {
+  console.error("FAIL: provider authentication is not wired into the sidebar entry point");
   process.exit(1);
 }
 

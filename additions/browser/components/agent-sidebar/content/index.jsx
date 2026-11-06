@@ -20,6 +20,9 @@ function loadModules() {
   const { configStore } = ChromeUtils.importESModule(
     "resource:///modules/agentsidebar/ConfigStore.sys.mjs"
   );
+  const { importCliProxyFiles, loginProvider } = ChromeUtils.importESModule(
+    "resource:///modules/agentsidebar/ProviderAuth.sys.mjs"
+  );
   const { buildClientFromStore, listProviders, isVisionModel, fetchModels, CUSTOM_PROTOCOL_OPTIONS } = ChromeUtils.importESModule(
     "resource:///modules/agentsidebar/providers.sys.mjs"
   );
