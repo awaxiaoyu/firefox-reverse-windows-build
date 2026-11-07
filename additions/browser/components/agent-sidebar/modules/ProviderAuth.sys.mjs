@@ -110,9 +110,12 @@ export function parseProviderCallback(value, expectedState) {
 
 function createCallbackServer(providerId, expectedState) {
   const provider = PROVIDERS[providerId];
-  const classes = globalThis.Cc || globalThis.Components?.classes;
-  const interfaces = globalThis.Ci || globalThis.Components?.interfaces;
-  const results = globalThis.Cr || globalThis.Components?.results;
+  // XPCOM aliases in Firefox chrome modules are often lexical globals rather
+  // than properties on globalThis.  Prefer those aliases, then retain the
+  // property/Components fallbacks used by test harnesses and older shells.
+  const classes = (typeof Cc !== "undefined" ? Cc : null) || globalThis.Cc || globalThis.Components?.classes;
+  const interfaces = (typeof Ci !== "undefined" ? Ci : null) || globalThis.Ci || globalThis.Components?.interfaces;
+  const results = (typeof Cr !== "undefined" ? Cr : null) || globalThis.Cr || globalThis.Components?.results;
   if (!classes || !interfaces) throw new Error("Firefox loopback OAuth 服务不可用");
 
   const server = classes["@mozilla.org/network/server-socket;1"].createInstance(interfaces.nsIServerSocket);
